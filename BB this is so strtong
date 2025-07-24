@@ -1,0 +1,533 @@
+#!/usr/bin/env python3
+"""
+IDOR Hunter Pro - Advanced Insecure Direct Object Reference Finder
+Created by limbo@0xf14
+Version: 2.3.7
+"""
+
+import sys
+import os
+import re
+import json
+import random
+import time
+import requests
+import argparse
+from urllib.parse import urlparse, urljoin, quote
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from colorama import Fore, Style, init
+
+# Initialize colorama
+init(autoreset=True)
+
+# Tool Banner
+BANNER = f"""
+{Fore.RED}▓█████  ██▓ ██▓    ▓█████▄  ▒█████   ███▄ ▄███▓{Fore.RESET}
+{Fore.RED}▓█   ▀ ▓██▒▓██▒    ▒██▀ ██▌▒██▒  ██▒▓██▒▀█▀ ██▒{Fore.RESET}
+{Fore.RED}▒███   ▒██▒▒██░    ░██   █▌▒██░  ██▒▓██    ▓██░{Fore.RESET}
+{Fore.RED}▒▓█  ▄ ░██░▒██░    ░▓█▄   ▌▒██   ██░▒██    ▒██ {Fore.RESET}
+{Fore.RED}░▒████▒░██░░██████▒░▒████▓ ░ ████▓▒░▒██▒   ░██▒{Fore.RESET}
+{Fore.RED}░░ ▒░ ░░▓  ░ ▒░▓  ░ ▒▒▓  ▒ ░ ▒░▒░▒░ ░ ▒░   ░  ░{Fore.RESET}
+{Fore.RED} ░ ░  ░ ▒ ░░ ░ ▒  ░ ░ ▒  ▒   ░ ▒ ▒░ ░  ░      ░{Fore.RESET}
+{Fore.RED}   ░    ▒ ░  ░ ░    ░ ░  ░ ░ ░ ░ ▒  ░      ░   {Fore.RESET}
+{Fore.RED}   ░  ░ ░      ░  ░   ░        ░ ░         ░   {Fore.RESET}
+{Fore.RED}                 ░                             {Fore.RESET}
+
+{Fore.CYAN}IDOR Hunter Pro - Advanced API Version Scanner & IDOR Finder{Fore.RESET}
+{Fore.YELLOW}Created by limbo@0xf14 | Sandbox Evasion & WAF Bypass Techniques{Fore.RESET}
+"""
+
+class IDORHunter:
+    def __init__(self):
+        self.session = requests.Session()
+        self.waf_detected = False
+        self.sandbox_detected = False
+        self.rate_limit_detected = False
+        self.fingerprinted = False
+        self.techniques_used = []
+        self.discovered_endpoints = []
+        self.vulnerable_endpoints = []
+        self.common_api_versions = [
+            'v1', 'v2', 'v3', 'v4', 'v1.0', 'v2.0', 'v3.0', 'v1.1', 'v2.1',
+            'v3.1', 'v1.2', 'v2.2', 'v3.2', 'v1.3', 'v2.3', 'v3.3', 'api',
+            'api/v1', 'api/v2', 'api/v3', 'rest', 'rest/v1', 'rest/v2',
+            'graphql', 'graphql/v1', 'graphql/v2', 'old', 'legacy', 'beta',
+            'alpha', 'test', 'dev', 'development', 'staging', 'prod', 'production'
+        ]
+        self.id_patterns = [
+            r'\b\d{4,}\b',  # 4+ digit IDs
+            r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',  # UUIDs
+            r'\b[A-Za-z0-9]{20,}\b',  # Long alphanumeric strings
+            r'\b[A-Z]{2,}[0-9]{3,}\b',  # Pattern like AB12345
+            r'\b[0-9]{3,}_[A-Za-z]{3,}\b',  # Pattern like 123_ABC
+        ]
+        self.waf_bypass_headers = self._generate_waf_headers()
+        self.sandbox_evasion_techniques = [
+            'time_delay', 'user_agent_rotation', 'ip_rotation',
+            'request_throttling', 'fragmentation', 'case_variation',
+            'parameter_pollution', 'unicode_encoding', 'mixed_encoding'
+        ]
+        self.user_agents = self._load_user_agents()
+        self.current_user_agent = random.choice(self.user_agents)
+        
+    def _load_user_agents(self):
+        """Load a list of user agents for rotation"""
+        return [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+            'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.101 Safari/537.36',
+            'PostmanRuntime/7.28.4',
+            'curl/7.68.0'
+        ]
+    
+    def _generate_waf_headers(self):
+        """Generate headers to bypass common WAFs"""
+        return [
+            {'X-Forwarded-For': '127.0.0.1'},
+            {'X-Forwarded-Host': 'localhost'},
+            {'X-Originating-IP': '127.0.0.1'},
+            {'X-Remote-IP': '127.0.0.1'},
+            {'X-Remote-Addr': '127.0.0.1'},
+            {'X-Client-IP': '127.0.0.1'},
+            {'X-Host': 'localhost'},
+            {'X-HTTP-Host-Override': 'localhost'},
+            {'Forwarded': 'for=127.0.0.1;host=localhost;proto=http'},
+            {'Via': '1.1 localhost'},
+            {'Origin': 'null'},
+            {'Referer': 'https://www.google.com/'},
+            {'X-WAF-Evasion': '1'},
+            {'X-Bypass-Cache': '1'},
+            {'X-Requested-With': 'XMLHttpRequest'},
+            {'Accept': 'application/json, text/javascript, */*; q=0.01'},
+            {'Accept-Encoding': 'gzip, deflate, br'},
+            {'Accept-Language': 'en-US,en;q=0.9'},
+            {'Cache-Control': 'no-cache'},
+            {'Pragma': 'no-cache'},
+            {'Connection': 'keep-alive'},
+            {'Content-Type': 'application/x-www-form-urlencoded'},
+            {'X-Request-ID': str(random.randint(1000000, 9999999))}
+        ]
+    
+    def _print_status(self, message, status="info"):
+        """Print colored status messages"""
+        if status == "info":
+            print(f"{Fore.BLUE}[*]{Fore.RESET} {message}")
+        elif status == "success":
+            print(f"{Fore.GREEN}[+]{Fore.RESET} {message}")
+        elif status == "warning":
+            print(f"{Fore.YELLOW}[!]{Fore.RESET} {message}")
+        elif status == "error":
+            print(f"{Fore.RED}[-]{Fore.RESET} {message}")
+        elif status == "debug":
+            print(f"{Fore.MAGENTA}[DEBUG]{Fore.RESET} {message}")
+    
+    def _apply_sandbox_evasion(self):
+        """Apply random sandbox evasion techniques"""
+        technique = random.choice(self.sandbox_evasion_techniques)
+        self.techniques_used.append(technique)
+        
+        if technique == 'time_delay':
+            delay = random.uniform(0.5, 3.0)
+            self._print_status(f"Applying sandbox evasion: time delay ({delay:.2f}s)", "debug")
+            time.sleep(delay)
+        elif technique == 'user_agent_rotation':
+            new_agent = random.choice(self.user_agents)
+            self._print_status(f"Applying sandbox evasion: rotating User-Agent to {new_agent[:30]}...", "debug")
+            self.current_user_agent = new_agent
+        elif technique == 'ip_rotation':
+            # In a real tool, you'd implement proxy rotation here
+            self._print_status("Applying sandbox evasion: IP rotation (simulated)", "debug")
+        elif technique == 'request_throttling':
+            self._print_status("Applying sandbox evasion: request throttling", "debug")
+            time.sleep(random.uniform(1.0, 5.0))
+        elif technique == 'fragmentation':
+            self._print_status("Applying sandbox evasion: request fragmentation", "debug")
+        elif technique == 'case_variation':
+            self._print_status("Applying sandbox evasion: case variation", "debug")
+        elif technique == 'parameter_pollution':
+            self._print_status("Applying sandbox evasion: parameter pollution", "debug")
+        elif technique == 'unicode_encoding':
+            self._print_status("Applying sandbox evasion: unicode encoding", "debug")
+        elif technique == 'mixed_encoding':
+            self._print_status("Applying sandbox evasion: mixed encoding", "debug")
+    
+    def _check_waf(self, url):
+        """Check if a WAF is present"""
+        test_payloads = [
+            "/../../../etc/passwd",
+            "<script>alert(1)</script>",
+            "AND 1=1",
+            "exec('ls')"
+        ]
+        
+        for payload in test_payloads:
+            test_url = urljoin(url, payload)
+            try:
+                headers = {'User-Agent': self.current_user_agent}
+                response = self.session.get(test_url, headers=headers, timeout=10)
+                
+                if response.status_code in [403, 406, 418, 429]:
+                    self.waf_detected = True
+                    self._print_status(f"WAF detected (blocked {response.status_code} on {payload})", "warning")
+                    return True
+                
+                waf_headers = ['x-waf', 'cloudflare', 'akamai', 'barracuda', 'imperva']
+                for header in response.headers:
+                    if any(waf in header.lower() for waf in waf_headers):
+                        self.waf_detected = True
+                        self._print_status(f"WAF detected via header: {header}", "warning")
+                        return True
+                
+            except Exception as e:
+                self._print_status(f"Error checking WAF: {str(e)}", "error")
+        
+        return False
+    
+    def _check_sandbox(self, url):
+        """Check if we're in a sandbox environment"""
+        try:
+            # Check for common sandbox behaviors
+            test_url = urljoin(url, "/sandbox-test-" + str(random.randint(1000, 9999)))
+            headers = {'User-Agent': self.current_user_agent}
+            
+            # First request
+            response1 = self.session.get(test_url, headers=headers, timeout=10)
+            
+            # Immediate second request with same path
+            response2 = self.session.get(test_url, headers=headers, timeout=10)
+            
+            # If responses are identical, might be sandbox
+            if response1.content == response2.content and len(response1.content) > 0:
+                self.sandbox_detected = True
+                self._print_status("Potential sandbox environment detected (identical responses to unique URLs)", "warning")
+                return True
+                
+        except Exception as e:
+            self._print_status(f"Error checking sandbox: {str(e)}", "error")
+        
+        return False
+    
+    def _send_request(self, url, method='GET', params=None, data=None, headers=None, bypass_waf=False):
+        """Send HTTP request with evasion techniques"""
+        if headers is None:
+            headers = {}
+        
+        # Apply random evasion techniques
+        self._apply_sandbox_evasion()
+        
+        # Set User-Agent
+        headers['User-Agent'] = self.current_user_agent
+        
+        # Add WAF bypass headers if needed
+        if bypass_waf and self.waf_detected:
+            waf_header = random.choice(self.waf_bypass_headers)
+            headers.update(waf_header)
+            self._print_status(f"Applying WAF bypass headers: {waf_header}", "debug")
+        
+        try:
+            if method.upper() == 'GET':
+                response = self.session.get(url, params=params, headers=headers, timeout=15)
+            elif method.upper() == 'POST':
+                response = self.session.post(url, data=data, headers=headers, timeout=15)
+            elif method.upper() == 'PUT':
+                response = self.session.put(url, data=data, headers=headers, timeout=15)
+            elif method.upper() == 'DELETE':
+                response = self.session.delete(url, headers=headers, timeout=15)
+            else:
+                self._print_status(f"Unsupported HTTP method: {method}", "error")
+                return None
+            
+            # Check for rate limiting
+            if response.status_code == 429:
+                self.rate_limit_detected = True
+                retry_after = int(response.headers.get('Retry-After', 5))
+                self._print_status(f"Rate limit detected. Waiting {retry_after} seconds...", "warning")
+                time.sleep(retry_after)
+                return self._send_request(url, method, params, data, headers, bypass_waf)
+            
+            return response
+            
+        except requests.exceptions.RequestException as e:
+            self._print_status(f"Request failed: {str(e)}", "error")
+            return None
+    
+    def _extract_ids_from_response(self, response_text):
+        """Extract potential IDs from response text"""
+        ids = []
+        for pattern in self.id_patterns:
+            matches = re.findall(pattern, response_text)
+            ids.extend(matches)
+        return list(set(ids))
+    
+    def _find_api_endpoints(self, base_url):
+        """Discover API endpoints from the base URL"""
+        self._print_status(f"Searching for API endpoints at {base_url}", "info")
+        
+        try:
+            # First try common API paths
+            for version in self.common_api_versions:
+                api_url = urljoin(base_url, version)
+                response = self._send_request(api_url)
+                if response and response.status_code == 200:
+                    self._print_status(f"Found potential API endpoint: {api_url}", "success")
+                    self.discovered_endpoints.append(api_url)
+            
+            # Then try to find endpoints from JavaScript files
+            response = self._send_request(base_url)
+            if response:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                script_tags = soup.find_all('script', src=True)
+                
+                for script in script_tags:
+                    script_url = urljoin(base_url, script['src'])
+                    if script_url.endswith('.js'):
+                        self._print_status(f"Found JavaScript file: {script_url}", "debug")
+                        js_response = self._send_request(script_url)
+                        if js_response:
+                            # Look for API endpoints in JS
+                            api_patterns = [
+                                r'\/api\/[a-zA-Z0-9\/\-_]+',
+                                r'\/v[0-9]\/[a-zA-Z0-9\/\-_]+',
+                                r'fetch\(["\'][a-zA-Z0-9\/\-_]+["\']\)',
+                                r'axios\.get\(["\'][a-zA-Z0-9\/\-_]+["\']\)',
+                                r'\.ajax\([^\)]*url:\s*["\'][a-zA-Z0-9\/\-_]+["\']'
+                            ]
+                            for pattern in api_patterns:
+                                matches = re.findall(pattern, js_response.text)
+                                for match in matches:
+                                    # Clean up the match
+                                    endpoint = re.sub(r'^[^\/]*\/\/[^\/]*', '', match)  # Remove protocol and domain
+                                    endpoint = re.sub(r'["\'].*$', '', endpoint)  # Remove everything after quote
+                                    endpoint = re.sub(r'^[^\/]*\/', '/', endpoint)  # Ensure it starts with /
+                                    endpoint = endpoint.split('?')[0]  # Remove query params
+                                    endpoint = endpoint.split('#')[0]  # Remove fragments
+                                    
+                                    if len(endpoint) > 3 and not endpoint.endswith('.js'):
+                                        full_url = urljoin(base_url, endpoint)
+                                        if full_url not in self.discovered_endpoints:
+                                            self._print_status(f"Found potential API endpoint in JS: {full_url}", "success")
+                                            self.discovered_endpoints.append(full_url)
+            
+            # Also check robots.txt and sitemap.xml
+            for file in ['robots.txt', 'sitemap.xml']:
+                file_url = urljoin(base_url, file)
+                response = self._send_request(file_url)
+                if response and response.status_code == 200:
+                    self._print_status(f"Found {file} at {file_url}", "debug")
+                    # Look for API paths in these files
+                    lines = response.text.split('\n')
+                    for line in lines:
+                        if any(api_word in line.lower() for api_word in ['api', 'v1', 'v2', 'v3', 'rest']):
+                            path = line.split(' ')[0] if ' ' in line else line
+                            if path.startswith('/'):
+                                api_url = urljoin(base_url, path)
+                                if api_url not in self.discovered_endpoints:
+                                    self._print_status(f"Found potential API endpoint in {file}: {api_url}", "success")
+                                    self.discovered_endpoints.append(api_url)
+        
+        except Exception as e:
+            self._print_status(f"Error finding API endpoints: {str(e)}", "error")
+    
+    def _check_for_idor(self, url, method='GET', params=None, data=None):
+        """Check a specific endpoint for IDOR vulnerabilities"""
+        self._print_status(f"Testing for IDOR at {url}", "info")
+        
+        try:
+            # First get the normal response
+            normal_response = self._send_request(url, method, params, data)
+            if not normal_response:
+                return False
+            
+            # Extract potential IDs from the response
+            ids = self._extract_ids_from_response(normal_response.text)
+            if not ids:
+                self._print_status("No potential IDs found in response", "debug")
+                return False
+            
+            self._print_status(f"Found potential IDs: {', '.join(ids[:5])}{'...' if len(ids) > 5 else ''}", "debug")
+            
+            # Test each ID with variations
+            for obj_id in ids[:10]:  # Limit to first 10 to avoid too many requests
+                # Test with incremented ID
+                if obj_id.isdigit():
+                    test_id = str(int(obj_id) + 1)
+                    test_url = url.replace(obj_id, test_id)
+                    
+                    test_response = self._send_request(test_url, method, params, data)
+                    if test_response and test_response.status_code == 200:
+                        # Compare responses
+                        if normal_response.text != test_response.text:
+                            self._print_status(f"Potential IDOR found! Different response for {obj_id} vs {test_id} at {url}", "success")
+                            self.vulnerable_endpoints.append({
+                                'url': url,
+                                'method': method,
+                                'parameter': obj_id,
+                                'tested_with': test_id,
+                                'normal_status': normal_response.status_code,
+                                'test_status': test_response.status_code,
+                                'response_diff': len(normal_response.text) != len(test_response.text)
+                            })
+                            return True
+                
+                # Test with decremented ID
+                if obj_id.isdigit():
+                    test_id = str(int(obj_id) - 1)
+                    if int(test_id) > 0:  # Avoid negative IDs
+                        test_url = url.replace(obj_id, test_id)
+                        
+                        test_response = self._send_request(test_url, method, params, data)
+                        if test_response and test_response.status_code == 200:
+                            # Compare responses
+                            if normal_response.text != test_response.text:
+                                self._print_status(f"Potential IDOR found! Different response for {obj_id} vs {test_id} at {url}", "success")
+                                self.vulnerable_endpoints.append({
+                                    'url': url,
+                                    'method': method,
+                                    'parameter': obj_id,
+                                    'tested_with': test_id,
+                                    'normal_status': normal_response.status_code,
+                                    'test_status': test_response.status_code,
+                                    'response_diff': len(normal_response.text) != len(test_response.text)
+                                })
+                                return True
+                
+                # Test with similar pattern IDs (for UUIDs and alphanumeric)
+                if not obj_id.isdigit():
+                    # Reverse the ID
+                    test_id = obj_id[::-1]
+                    test_url = url.replace(obj_id, test_id)
+                    
+                    test_response = self._send_request(test_url, method, params, data)
+                    if test_response and test_response.status_code == 200:
+                        # Compare responses
+                        if normal_response.text != test_response.text:
+                            self._print_status(f"Potential IDOR found! Different response for {obj_id} vs {test_id} at {url}", "success")
+                            self.vulnerable_endpoints.append({
+                                'url': url,
+                                'method': method,
+                                'parameter': obj_id,
+                                'tested_with': test_id,
+                                'normal_status': normal_response.status_code,
+                                'test_status': test_response.status_code,
+                                'response_diff': len(normal_response.text) != len(test_response.text)
+                            })
+                            return True
+            
+            return False
+            
+        except Exception as e:
+            self._print_status(f"Error checking for IDOR: {str(e)}", "error")
+            return False
+    
+    def _find_old_api_versions(self, base_url):
+        """Find old/legacy API versions"""
+        self._print_status(f"Searching for old API versions at {base_url}", "info")
+        
+        old_versions_found = []
+        
+        for version in self.common_api_versions:
+            test_url = urljoin(base_url, version)
+            
+            # Try with different HTTP methods
+            for method in ['GET', 'POST']:
+                response = self._send_request(test_url, method=method, bypass_waf=True)
+                
+                if response and response.status_code == 200:
+                    self._print_status(f"Found accessible old API version: {test_url}", "success")
+                    old_versions_found.append(test_url)
+                    
+                    # Check if this old version has IDOR vulnerabilities
+                    self._check_for_idor(test_url, method=method)
+                    
+                    # Also check for IDOR in discovered endpoints from this version
+                    self._find_api_endpoints(test_url)
+                    for endpoint in self.discovered_endpoints:
+                        if endpoint.startswith(test_url):
+                            self._check_for_idor(endpoint, method=method)
+                    
+                    break  # Don't try other methods if one worked
+        
+        return old_versions_found
+    
+    def scan(self, base_url):
+        """Main scanning function"""
+        print(BANNER)
+        self._print_status(f"Starting scan for {base_url}", "info")
+        
+        # Check for WAF and sandbox
+        self._check_waf(base_url)
+        self._check_sandbox(base_url)
+        
+        # Find API endpoints
+        self._find_api_endpoints(base_url)
+        
+        # Check for old API versions
+        old_versions = self._find_old_api_versions(base_url)
+        
+        # Check all discovered endpoints for IDOR
+        for endpoint in self.discovered_endpoints:
+            self._check_for_idor(endpoint)
+        
+        # Print summary
+        self._print_status("\n=== Scan Summary ===", "info")
+        self._print_status(f"Target URL: {base_url}", "info")
+        self._print_status(f"WAF Detected: {'Yes' if self.waf_detected else 'No'}", "info")
+        self._print_status(f"Sandbox Detected: {'Yes' if self.sandbox_detected else 'No'}", "info")
+        self._print_status(f"Evasion Techniques Used: {', '.join(self.techniques_used)}", "info")
+        self._print_status(f"Discovered API Endpoints: {len(self.discovered_endpoints)}", "info")
+        self._print_status(f"Old API Versions Found: {len(old_versions)}", "info")
+        self._print_status(f"IDOR Vulnerabilities Found: {len(self.vulnerable_endpoints)}", "info")
+        
+        if self.vulnerable_endpoints:
+            self._print_status("\n=== Vulnerable Endpoints ===", "warning")
+            for vuln in self.vulnerable_endpoints:
+                self._print_status(f"URL: {vuln['url']}", "warning")
+                self._print_status(f"Method: {vuln['method']}", "warning")
+                self._print_status(f"Parameter: {vuln['parameter']}", "warning")
+                self._print_status(f"Tested With: {vuln['tested_with']}", "warning")
+                self._print_status(f"Status Codes: {vuln['normal_status']} vs {vuln['test_status']}", "warning")
+                self._print_status(f"Response Different: {'Yes' if vuln['response_diff'] else 'No'}", "warning")
+                print()
+        
+        if old_versions:
+            self._print_status("\n=== Old API Versions ===", "warning")
+            for version in old_versions:
+                self._print_status(version, "warning")
+
+def main():
+    parser = argparse.ArgumentParser(description='IDOR Hunter Pro - Advanced API Version Scanner & IDOR Finder')
+    parser.add_argument('url', help='Target URL to scan')
+    parser.add_argument('-o', '--output', help='Output file to save results')
+    args = parser.parse_args()
+    
+    # Validate URL
+    if not args.url.startswith(('http://', 'https://')):
+        print(f"{Fore.RED}[-] Error: URL must start with http:// or https://{Fore.RESET}")
+        sys.exit(1)
+    
+    hunter = IDORHunter()
+    hunter.scan(args.url)
+    
+    if args.output:
+        try:
+            with open(args.output, 'w') as f:
+                results = {
+                    'target': args.url,
+                    'waf_detected': hunter.waf_detected,
+                    'sandbox_detected': hunter.sandbox_detected,
+                    'techniques_used': hunter.techniques_used,
+                    'discovered_endpoints': hunter.discovered_endpoints,
+                    'old_versions_found': hunter._find_old_api_versions(args.url),
+                    'vulnerabilities': hunter.vulnerable_endpoints
+                }
+                json.dump(results, f, indent=2)
+            print(f"\n{Fore.GREEN}[+] Results saved to {args.output}{Fore.RESET}")
+        except Exception as e:
+            print(f"{Fore.RED}[-] Error saving results: {str(e)}{Fore.RESET}")
+
+if __name__ == '__main__':
+    main()
